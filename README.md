@@ -1,3 +1,5 @@
+[![Watch a one-minute video tour of stse-linux](https://gitdiagram.com/video-badge.svg)](https://gitdiagram.com/stmicroelectronics/stse-linux/video)
+
 # STSAFE-A STSAFE-L Linux Middleware
 
 Userspace middleware for **STSAFE-A120** and **STSAFE-L010** secure elements on Linux/MPU platforms.
