@@ -193,6 +193,8 @@ set(_a120_all_bin_names
 set(_a110_all_bin_names
     ${STSE_A110_STRUCTURED_EXAMPLES}
     a110_02_OpenSSL_ecdsa_sign_verify
+    a110_07_OpenSSL_https_server
+    a110_07_OpenSSL_https_client
 )
 
 # STSAFE-L010: binary output names (no prefix) and CMake target names (l010_
@@ -444,6 +446,14 @@ if(BUILD_EXAMPLES)
         # Provider demo for A110: ECDSA sign + hardware verify
         stsea110_add_example(a110_02_OpenSSL_ecdsa_sign_verify "02_OpenSSL_ecdsa_sign_verify"
             "examples/stsafe-a110/02_OpenSSL_ecdsa_sign_verify/main.c" FALSE)
+
+        # Provider demo for A110: HTTPS server backed by STSAFE-A110 hardware
+        stsea110_add_example(a110_07_OpenSSL_https_server "07_OpenSSL_https_server"
+            "examples/stsafe-a110/07_OpenSSL_https_server/main.c" FALSE)
+
+        # Provider demo for A110: HTTPS client backed by STSAFE-A110 hardware (mTLS)
+        stsea110_add_example(a110_07_OpenSSL_https_client "07_OpenSSL_https_client"
+            "examples/stsafe-a110/07_OpenSSL_https_client/main.c" FALSE)
 
     endif() # BUILD_STSAFEA110
 
@@ -768,6 +778,14 @@ if(BUILD_STSAFEA110)
     if(TARGET a110_02_OpenSSL_ecdsa_sign_verify)
         list(APPEND _a110_deploy_bins "02_OpenSSL_ecdsa_sign_verify")
         list(APPEND _deploy_deps a110_02_OpenSSL_ecdsa_sign_verify)
+    endif()
+    if(TARGET a110_07_OpenSSL_https_server)
+        list(APPEND _a110_deploy_bins "07_OpenSSL_https_server")
+        list(APPEND _deploy_deps a110_07_OpenSSL_https_server)
+    endif()
+    if(TARGET a110_07_OpenSSL_https_client)
+        list(APPEND _a110_deploy_bins "07_OpenSSL_https_client")
+        list(APPEND _deploy_deps a110_07_OpenSSL_https_client)
     endif()
     if(TARGET a110_06_GTK_Authentication_Demo)
         list(APPEND _a110_deploy_bins "06_GTK_Authentication_Demo")
