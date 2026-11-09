@@ -185,12 +185,16 @@ set(STSE_A110_STRUCTURED_EXAMPLES
 set(_a120_all_bin_names
     ${STSE_A120_STRUCTURED_EXAMPLES}
     02_OpenSSL_ecdsa_sign_verify
+    07_OpenSSL_https_server
+    07_OpenSSL_https_client
 )
 
 # Full A110 binary name list (expanded further if GTK is found)
 set(_a110_all_bin_names
     ${STSE_A110_STRUCTURED_EXAMPLES}
     a110_02_OpenSSL_ecdsa_sign_verify
+    a110_07_OpenSSL_https_server
+    a110_07_OpenSSL_https_client
 )
 
 # STSAFE-L010: binary output names (no prefix) and CMake target names (l010_
@@ -443,6 +447,14 @@ if(BUILD_EXAMPLES)
         stsea110_add_example(a110_02_OpenSSL_ecdsa_sign_verify "02_OpenSSL_ecdsa_sign_verify"
             "examples/stsafe-a110/02_OpenSSL_ecdsa_sign_verify/main.c" FALSE)
 
+        # Provider demo for A110: HTTPS server backed by STSAFE-A110 hardware
+        stsea110_add_example(a110_07_OpenSSL_https_server "07_OpenSSL_https_server"
+            "examples/stsafe-a110/07_OpenSSL_https_server/main.c" FALSE)
+
+        # Provider demo for A110: HTTPS client backed by STSAFE-A110 hardware (mTLS)
+        stsea110_add_example(a110_07_OpenSSL_https_client "07_OpenSSL_https_client"
+            "examples/stsafe-a110/07_OpenSSL_https_client/main.c" FALSE)
+
     endif() # BUILD_STSAFEA110
 
     # ── STSAFE-L010 examples ──────────────────────────────────────────────
@@ -555,6 +567,32 @@ if(BUILD_PROVIDER)
         set_target_properties(02_OpenSSL_ecdsa_sign_verify PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${A120_BIN_DIR}")
         install(TARGETS 02_OpenSSL_ecdsa_sign_verify
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+        # Provider demo: HTTPS server backed by STSAFE-A hardware
+        add_executable(07_OpenSSL_https_server
+            examples/stsafe-a120/07_OpenSSL_https_server/main.c)
+        target_include_directories(07_OpenSSL_https_server PRIVATE
+            ${STSE_COMMON_INCLUDES}
+            "${CMAKE_CURRENT_SOURCE_DIR}/providers")
+        target_link_libraries(07_OpenSSL_https_server PRIVATE
+            OpenSSL::SSL OpenSSL::Crypto)
+        set_target_properties(07_OpenSSL_https_server PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${A120_BIN_DIR}")
+        install(TARGETS 07_OpenSSL_https_server
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+        # Provider demo: HTTPS client backed by STSAFE-A hardware (mTLS)
+        add_executable(07_OpenSSL_https_client
+            examples/stsafe-a120/07_OpenSSL_https_client/main.c)
+        target_include_directories(07_OpenSSL_https_client PRIVATE
+            ${STSE_COMMON_INCLUDES}
+            "${CMAKE_CURRENT_SOURCE_DIR}/providers")
+        target_link_libraries(07_OpenSSL_https_client PRIVATE
+            OpenSSL::SSL OpenSSL::Crypto)
+        set_target_properties(07_OpenSSL_https_client PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${A120_BIN_DIR}")
+        install(TARGETS 07_OpenSSL_https_client
             RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
     endif() # BUILD_STSAFEA120
@@ -670,6 +708,12 @@ if(BUILD_STSAFEA120)
         if(TARGET 02_OpenSSL_ecdsa_sign_verify)
             list(APPEND _deploy_deps 02_OpenSSL_ecdsa_sign_verify)
         endif()
+        if(TARGET 07_OpenSSL_https_server)
+            list(APPEND _deploy_deps 07_OpenSSL_https_server)
+        endif()
+        if(TARGET 07_OpenSSL_https_client)
+            list(APPEND _deploy_deps 07_OpenSSL_https_client)
+        endif()
 
         # Deploy stsafe-a120.so provider
         _dcmd(ssh "${DEPLOY_TARGET}" "mkdir -p '${STSE_PROV_DEST}'")
@@ -734,6 +778,14 @@ if(BUILD_STSAFEA110)
     if(TARGET a110_02_OpenSSL_ecdsa_sign_verify)
         list(APPEND _a110_deploy_bins "02_OpenSSL_ecdsa_sign_verify")
         list(APPEND _deploy_deps a110_02_OpenSSL_ecdsa_sign_verify)
+    endif()
+    if(TARGET a110_07_OpenSSL_https_server)
+        list(APPEND _a110_deploy_bins "07_OpenSSL_https_server")
+        list(APPEND _deploy_deps a110_07_OpenSSL_https_server)
+    endif()
+    if(TARGET a110_07_OpenSSL_https_client)
+        list(APPEND _a110_deploy_bins "07_OpenSSL_https_client")
+        list(APPEND _deploy_deps a110_07_OpenSSL_https_client)
     endif()
     if(TARGET a110_06_GTK_Authentication_Demo)
         list(APPEND _a110_deploy_bins "06_GTK_Authentication_Demo")

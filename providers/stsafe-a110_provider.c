@@ -106,6 +106,15 @@ typedef struct stse_sigctx_st {
 } stse_sigctx_t;
 
 /* =========================================================================
+ * Key exchange context — per EVP_PKEY_derive operation (ECDH)
+ * ========================================================================= */
+typedef struct stse_keyexchctx_st {
+    stse_provctx_t *provctx;
+    stse_key_t     *key;      /* local private key (STSAFE hardware slot) */
+    stse_key_t     *peer_key; /* peer public key */
+} stse_keyexchctx_t;
+
+/* =========================================================================
  * Forward declarations
  * ========================================================================= */
 static int stse_keymgmt_gen_set_params(void *vgenctx, const OSSL_PARAM params[]);
@@ -193,6 +202,13 @@ static int stsafea110_ec_keymgmt_export(void *vkey, int selection,
 {
     stse_key_t *key = (stse_key_t *)vkey;
     if (!key) return 0;
+
+    /* Hardware private keys cannot be exported to another provider.
+     * If the caller specifically requests the private key or a full keypair,
+     * export must fail so OpenSSL will not attempt to delegate private key
+     * operations (like signing) to a software provider. */
+    if (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)
+        return 0;
 
     if (!(selection & (OSSL_KEYMGMT_SELECT_PUBLIC_KEY |
                        OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS)))
@@ -317,9 +333,10 @@ static const OSSL_PARAM *stsafea110_ec_keymgmt_import_types(int selection)
 }
 
 static const OSSL_PARAM stse_keymgmt_gettable_params_tab[] = {
-    OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, NULL, 0),
-    OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY,   NULL, 0),
-    OSSL_PARAM_int(OSSL_PKEY_PARAM_BITS,               NULL),
+    OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,    NULL, 0),
+    OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY,      NULL, 0),
+    OSSL_PARAM_int(OSSL_PKEY_PARAM_BITS,                  NULL),
+    OSSL_PARAM_int(OSSL_PKEY_PARAM_SECURITY_BITS,         NULL),
     OSSL_PARAM_END
 };
 
@@ -364,6 +381,16 @@ static int stsafea110_ec_keymgmt_get_params(void *vkey, OSSL_PARAM params[])
             }
         }
         if (!OSSL_PARAM_set_int(p, bits)) return 0;
+    }
+
+    p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_SECURITY_BITS);
+    if (p) {
+        int sec_bits = 128;
+        if (key->curve_type == STSE_ECC_KT_NIST_P_384 || key->curve_type == STSE_ECC_KT_BP_P_384)
+            sec_bits = 192;
+        else if (key->curve_type == STSE_ECC_KT_NIST_P_521 || key->curve_type == STSE_ECC_KT_BP_P_512)
+            sec_bits = 256;
+        if (!OSSL_PARAM_set_int(p, sec_bits)) return 0;
     }
     return 1;
 }
@@ -510,6 +537,8 @@ static const char *stsafea110_ec_keymgmt_query_operation_name(int operation_id)
 {
     if (operation_id == OSSL_OP_SIGNATURE)
         return "ECDSA";
+    if (operation_id == OSSL_OP_KEYEXCH)
+        return "ECDH";
     return NULL;
 }
 
@@ -952,6 +981,127 @@ static int stse_sig_set_ctx_params(void *vsigctx, const OSSL_PARAM params[])
     return 1;
 }
 
+/* =========================================================================
+ * KEYEXCH — ECDH hardware key exchange implementation
+ * ========================================================================= */
+
+static void *stse_keyexch_newctx(void *vprovctx)
+{
+    stse_keyexchctx_t *kctx = OPENSSL_zalloc(sizeof(*kctx));
+    if (!kctx) return NULL;
+    kctx->provctx = (stse_provctx_t *)vprovctx;
+    return kctx;
+}
+
+static void stse_keyexch_freectx(void *vkeyexchctx)
+{
+    stse_keyexchctx_t *kctx = (stse_keyexchctx_t *)vkeyexchctx;
+    if (!kctx) return;
+    OPENSSL_free(kctx);
+}
+
+static void *stse_keyexch_dupctx(void *vkeyexchctx)
+{
+    stse_keyexchctx_t *src = (stse_keyexchctx_t *)vkeyexchctx;
+    stse_keyexchctx_t *dst = OPENSSL_zalloc(sizeof(*dst));
+    if (!dst) return NULL;
+    *dst = *src;
+    return dst;
+}
+
+static int stse_keyexch_init(void *vkeyexchctx, void *vkey, const OSSL_PARAM params[])
+{
+    (void)params;
+    stse_keyexchctx_t *kctx = (stse_keyexchctx_t *)vkeyexchctx;
+    if (!kctx || !vkey) return 0;
+    kctx->key = (stse_key_t *)vkey;
+    return 1;
+}
+
+static int stse_keyexch_set_peer(void *vkeyexchctx, void *vpeerkey)
+{
+    stse_keyexchctx_t *kctx = (stse_keyexchctx_t *)vkeyexchctx;
+    if (!kctx || !vpeerkey) return 0;
+    kctx->peer_key = (stse_key_t *)vpeerkey;
+    return 1;
+}
+
+static int stse_keyexch_derive(void *vkeyexchctx, unsigned char *secret,
+                               size_t *secretlen, size_t outlen)
+{
+    stse_keyexchctx_t *kctx = (stse_keyexchctx_t *)vkeyexchctx;
+    if (!kctx || !kctx->key || !kctx->peer_key) return 0;
+
+    stse_key_t *loc = kctx->key;
+    stse_key_t *peer = kctx->peer_key;
+
+    size_t field_len = 32;
+    for (int i = 0; ec_curves[i].name != NULL; i++) {
+        if (ec_curves[i].type == loc->curve_type) {
+            field_len = ec_curves[i].coord_len;
+            break;
+        }
+    }
+
+    if (!secret) {
+        *secretlen = field_len;
+        return 1;
+    }
+
+    if (outlen < field_len) return 0;
+
+    if (!provctx_ensure_init(kctx->provctx, loc->bus_id, loc->dev_addr, STSAFE_A110))
+        return 0;
+
+    const uint8_t *peer_pub_raw = peer->pub_point;
+    /* Format: skip 0x04 uncompressed prefix if present */
+    if (peer->has_pub && peer->pub_point[0] == 0x04) {
+        peer_pub_raw = peer->pub_point + 1;
+    }
+
+    stse_ReturnCode_t rc = stse_ecc_establish_shared_secret(&kctx->provctx->handler,
+                                                            loc->slot,
+                                                            loc->curve_type,
+                                                            (PLAT_UI8 *)peer_pub_raw,
+                                                            secret);
+    if (rc != STSE_OK) {
+        fprintf(stderr, "[stsafea110_provider] ECDH establish_shared_secret slot=%u curve=%u: err 0x%04X\n",
+                loc->slot, loc->curve_type, rc);
+        return 0;
+    }
+
+    *secretlen = field_len;
+    return 1;
+}
+
+static const OSSL_PARAM stse_keyexch_settable_ctx_params_tab[] = {
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *stse_keyexch_settable_ctx_params(void *vkeyexchctx, void *vprovctx)
+{
+    (void)vkeyexchctx; (void)vprovctx;
+    return stse_keyexch_settable_ctx_params_tab;
+}
+
+static int stse_keyexch_set_ctx_params(void *vkeyexchctx, const OSSL_PARAM params[])
+{
+    (void)vkeyexchctx; (void)params;
+    return 1;
+}
+
+static const OSSL_DISPATCH stsafea110_ecdh_functions[] = {
+    { OSSL_FUNC_KEYEXCH_NEWCTX,              (void (*)(void))stse_keyexch_newctx },
+    { OSSL_FUNC_KEYEXCH_INIT,                (void (*)(void))stse_keyexch_init },
+    { OSSL_FUNC_KEYEXCH_DERIVE,              (void (*)(void))stse_keyexch_derive },
+    { OSSL_FUNC_KEYEXCH_SET_PEER,            (void (*)(void))stse_keyexch_set_peer },
+    { OSSL_FUNC_KEYEXCH_FREECTX,             (void (*)(void))stse_keyexch_freectx },
+    { OSSL_FUNC_KEYEXCH_DUPCTX,              (void (*)(void))stse_keyexch_dupctx },
+    { OSSL_FUNC_KEYEXCH_SET_CTX_PARAMS,      (void (*)(void))stse_keyexch_set_ctx_params },
+    { OSSL_FUNC_KEYEXCH_SETTABLE_CTX_PARAMS,  (void (*)(void))stse_keyexch_settable_ctx_params },
+    OSSL_DISPATCH_END
+};
+
 static void *stsafea110_ec_keymgmt_load(const void *ref, size_t ref_len)
 {
     if (!ref || ref_len != sizeof(stse_key_t *)) return NULL;
@@ -1360,6 +1510,16 @@ static const OSSL_ALGORITHM stsafea110_decoder_algs[] = {
     { NULL, NULL, NULL, NULL }
 };
 
+static const OSSL_ALGORITHM stsafea110_keyexch_algs[] = {
+    {
+        "ECDH",
+        "provider=stsafe-a110",
+        stsafea110_ecdh_functions,
+        "STSAFE-A110 hardware ECDH key exchange"
+    },
+    { NULL, NULL, NULL, NULL }
+};
+
 static const OSSL_ALGORITHM *stsafea110_query_operation(void *vprovctx,
                                                         int operation_id,
                                                         int *no_cache)
@@ -1369,6 +1529,7 @@ static const OSSL_ALGORITHM *stsafea110_query_operation(void *vprovctx,
     switch (operation_id) {
     case OSSL_OP_KEYMGMT:   return stsafea110_keymgmt_algs;
     case OSSL_OP_SIGNATURE: return stsafea110_signature_algs;
+    case OSSL_OP_KEYEXCH:   return stsafea110_keyexch_algs;
     case OSSL_OP_ENCODER:   return stsafea110_encoder_algs;
     case OSSL_OP_DECODER:   return stsafea110_decoder_algs;
     default:                return NULL;
